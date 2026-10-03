@@ -1,7 +1,7 @@
 <template>
   <div>
     <h1 class="brand">任务</h1>
-    <p class="muted">改权重只影响之后新生成的周；下面同时回看所选周生成时落库的快照权重。</p>
+    <p class="muted">权重须为正整数，保存即校验（0/负数拒绝）；改权重只影响之后新生成的周，下面同时回看所选周生成时落库的快照权重。</p>
     <WeekSwitcher @changed="loadSnapshot" />
     <form @submit.prevent="add" style="margin-top:12px">
       <input v-model="title" placeholder="任务名" />
@@ -19,7 +19,7 @@
                    type="number" style="width:90px;margin:0 6px" />
           </label>
           <span class="chip" :class="{ coral: t.weight <= 0 }">
-            {{ t.weight > 0 ? '可入表' : 'weight≤0 不入表' }}
+            {{ t.weight > 0 ? '可入表' : 'weight≤0 历史/脏数据，不入表' }}
           </span>
           <span v-if="snapMap[t.id] !== undefined" class="chip">
             所选周快照权重 {{ snapMap[t.id] }}
@@ -63,10 +63,13 @@ async function loadSnapshot() {
 async function add() {
   err.value = ''
   if (!title.value.trim()) return
+  // 空输入按默认 1；0/负数如实提交，由后端拒绝并透出错误（不吞成 1）
+  const raw = newWeight.value
+  const weight = (raw === '' || raw === null || raw === undefined) ? 1 : Number(raw)
   try {
     await api('/tasks', {
       method: 'POST',
-      body: JSON.stringify({ title: title.value, weight: newWeight.value || 1 }),
+      body: JSON.stringify({ title: title.value, weight }),
     })
     title.value = ''
     await load()

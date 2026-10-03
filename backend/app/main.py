@@ -12,7 +12,7 @@ from app.modules.weighted_grid import (
     week_workload,
 )
 from app.modules.weighted_grid.remainder import POLICY, POLICY_LABEL
-from app.modules.weighted_grid.weights import as_int
+from app.modules.weighted_grid.weights import coerce_int
 
 app = FastAPI(title="Chorerota", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -40,48 +40,34 @@ def list_tasks():
 
 @app.post("/api/tasks")
 def add_task(body: dict):
-    # 允许 0/负整数落库（weight<=0 的任务在生成时被整次拒绝）；非整数拒
+    # 保存即卡正整数：非整数 / weight<=0 一律 400，不落库
     weight = body.get("weight", 1)
     try:
-        weight = as_int(weight)
+        weight = coerce_int(weight)
     except WeightValidationError:
-        raise HTTPException(400, "weight_must_be_int")
+        raise HTTPException(400, "weight_must_be_positive_int")
     c = connect()
     cur = c.execute("INSERT INTO tasks(title,weight,data_quality) VALUES (?,?,?)",
                     (body.get("title","任务"), weight, body.get("data_quality","clean")))
-    c.commit(); tid = cur.lastrowid; c.close(); return {"id": tid}
+    c.commit(); tid = cur.lastrowid; c.close(); return {"id": tid, "weight": weight}
 
 @app.put("/api/tasks/{task_id}")
 def update_task(task_id: int, body: dict):
-    """改任务权重：写现行值；已 ready 周按新权重切格位，周回看快照表不动。"""
+    """改任务权重：只写现行值。
+
+    已生成周的格位/快照/负荷全部钉在生成时写入值，本接口绝不重切；
+    新权重只影响之后新生成的周。保存即卡正整数，weight<=0 / 非整数 400。
+    """
     if "weight" not in body:
         raise HTTPException(400, "weight_required")
     try:
-        weight = as_int(body["weight"])
+        weight = coerce_int(body["weight"])
     except WeightValidationError:
-        raise HTTPException(400, "weight_must_be_int")
+        raise HTTPException(400, "weight_must_be_positive_int")
     c = connect()
     cur = c.execute("UPDATE tasks SET weight=? WHERE id=?", (weight, task_id))
     if not cur.rowcount:
         c.close(); raise HTTPException(404, "task not found")
-    mids = [r["id"] for r in c.execute(
-        "SELECT id FROM members WHERE active=1 AND data_quality='clean' ORDER BY id")]
-    clean_tasks = [dict(r) for r in c.execute(
-        "SELECT id,weight FROM tasks WHERE data_quality='clean' ORDER BY id")]
-    try:
-        plan = plan_week(mids, clean_tasks, days=7)
-    except WeightValidationError:
-        c.commit(); c.close()
-        return {"id": task_id, "weight": weight}
-    for wr in c.execute("SELECT id FROM weeks WHERE status='ready'"):
-        wid = wr["id"]
-        c.execute("DELETE FROM assignments WHERE week_id=?", (wid,))
-        c.executemany(
-            "INSERT INTO assignments(week_id,day,task_id,slot_index,member_id,weight_snapshot)"
-            " VALUES (?,?,?,?,?,?)",
-            [(wid, s["day"], s["task_id"], s["slot_index"], s["member_id"],
-              plan["weights"][s["task_id"]]) for s in plan["slots"]],
-        )
     c.commit(); c.close()
     return {"id": task_id, "weight": weight}
 
@@ -128,16 +114,9 @@ def week_board(week_id: int):
     active_clean = [r["id"] for r in c.execute(
         "SELECT id FROM members WHERE active=1 AND data_quality='clean' ORDER BY id")]
     snap = week_snapshot(c, week_id)
+    # 负荷只按该周 assignments 实落格子统计，与看板占格/成员页同一份钉；
+    # 绝不按现行 tasks.weight 重算（改现行权重不影响已生成周）。
     loads = week_workload(c, week_id, active_clean)
-    live_w = {r["id"]: r["weight"] for r in c.execute("SELECT id,weight FROM tasks")}
-    # 成员页负荷改按现行权估算，与 assignments 实落格可不一致
-    est = {m: 0 for m in active_clean}
-    if active_clean and live_w:
-        total = sum(max(int(w), 0) for w in live_w.values()) * 7
-        base, rem = divmod(total, len(active_clean))
-        for i, m in enumerate(active_clean):
-            est[m] = base + (1 if i < rem else 0)
-        loads = est
     c.close()
     for a in assigns:
         a["member_name"] = members.get(a["member_id"], "?")

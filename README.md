@@ -5,8 +5,10 @@
 ## 加权占格口径（唯一口径）
 
 - 仅 `data_quality='clean'` 且权重为正整数的任务入表，按权重在每日占多格
-  （weight=2 一天两格，格位身份为 `slot_index`）；weight≤0 或脏任务不入表，
-  任一 clean 任务 weight≤0 时**整次生成失败**，`assignments` 保持原行数。
+  （weight=2 一天两格，格位身份为 `slot_index`）；weight≤0 或脏任务不入表。
+  权重**保存即校验**：POST/PUT `/api/tasks` 收到 0、负数或非整数一律 400，
+  不落库；生成时再兜底，万一存在 clean 且 weight≤0 的行则**整次生成失败**，
+  `assignments` 保持原行数。
 - 成员仅取活跃 clean 集合，按「日→任务(id)→格位」展平后填人：基段
   round-robin；总格数不能被人数整除时，余数格走**当前负荷最低成员优先**
   （同负荷按成员 id 升序），最终任意两人负荷差 ≤1。
